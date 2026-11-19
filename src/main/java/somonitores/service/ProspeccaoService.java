@@ -96,7 +96,7 @@ public class ProspeccaoService {
      * CTEs que identificam cada equipamento (CHAVE_EQUIP) e numeram suas passagens.
      * Inclui TODAS as OS de nobreak (para contagens e histórico); a validade fica em VALIDA.
      */
-    private static final String CTE_EQUIPAMENTOS =
+    static final String CTE_EQUIPAMENTOS =
             "WITH base AS ( " +
             "    SELECT " +
             "        o.OS, o.CODCLI, o.FANTASIA, o.RZSOCIAL, o.MARCA, o.MODELO, o.SERIAL, o.PATRIMONIO, " +

@@ -17,6 +17,8 @@ import java.util.List;
 @NoArgsConstructor
 public class EquipamentoPublicoDTO {
     private String cliente;
+    /** código do cliente */
+    private Long codcli;
     private String equipamento;
     private String marca;
     private String modelo;
@@ -24,6 +26,14 @@ public class EquipamentoPublicoDTO {
     private String patrimonio;
     /** false quando o serial não identifica o equipamento (histórico = só a OS da etiqueta) */
     private boolean historicoPorSerial;
+    /** estado do banco de baterias do aparelho: ATIVO / ATENCAO / VENCIDO (null = sem manutenção válida) */
+    private String bateriaSituacao;
+    /** data da última manutenção válida (OS FECHADA com valor) - yyyy-MM-dd */
+    private String bateriaUltimaManutencao;
+    /** meses completos desde a última manutenção válida */
+    private Integer bateriaMeses;
+    /** OS da última manutenção válida */
+    private Long bateriaOs;
     /** última manutenção concluída (OS fechada mais recente); null se nenhuma */
     private PassagemPublicaDTO ultimaManutencao;
     /** todas as OS do equipamento, da mais recente para a mais antiga */

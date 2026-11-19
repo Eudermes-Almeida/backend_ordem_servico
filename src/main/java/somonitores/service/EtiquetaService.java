@@ -7,6 +7,8 @@ import jakarta.transaction.Transactional;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import somonitores.dto.EquipamentoPublicoDTO;
 import somonitores.dto.EtiquetaOsDTO;
+import somonitores.dto.FrotaClienteDTO;
+import somonitores.dto.FrotaNobreakDTO;
 import somonitores.dto.PassagemPublicaDTO;
 
 import java.security.SecureRandom;
@@ -14,6 +16,7 @@ import java.sql.Timestamp;
 import java.text.Normalizer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.Period;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -28,12 +31,18 @@ import java.util.Locale;
  *    aparelho); sem serial confiável, só a OS da etiqueta.
  *  - Garantias contadas do FECHAMENTO: peças/serviço 90 dias; baterias 180 dias, só se a OS
  *    trocou baterias = (BATERIAS preenchido e QT1 > 0) ou tarefa "BATERIA - SUBSTITUIÇÃO".
+ *  - Serial na página pública: só a parte que identifica o aparelho (texto colado, como e-mail, nunca aparece).
+ *  - Frota do cliente (botão "Nobreaks deste cliente"): mesmos critérios da prospecção
+ *    (última OS FECHADA com valor, regra de serial, até 6 anos); ATIVO < 18 meses,
+ *    ATENÇÃO 18 a < 24, VENCIDO >= 24.
  */
 @ApplicationScoped
 public class EtiquetaService {
 
     public static final int GARANTIA_SERVICO_DIAS = 90;
     public static final int GARANTIA_BATERIA_DIAS = 180;
+    public static final int MESES_ATENCAO = 18;
+    public static final int MESES_VENCIDO = 24;
     private static final String TAREFA_TROCA_BATERIA = "BATERIA - SUBSTITUICAO";
 
     private static final String ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
@@ -46,6 +55,9 @@ public class EtiquetaService {
     @Inject
     EntityManager entityManager;
 
+    @Inject
+    FrotaCache frotaCache;
+
     /** Colunas lidas da OS (mesma ordem usada em montarPassagem). Nenhum valor em R$. */
     private static final String SELECT_OS =
             "SELECT o.OS, o.CODCLI, o.FANTASIA, o.EQUIPAMENTO, o.MARCA, o.MODELO, o.SERIAL, o.PATRIMONIO, " +   // 0-7
@@ -53,7 +65,8 @@ public class EtiquetaService {
             "       o.DEFEITO1, o.DEFEITO2, o.DEFEITO3, o.TAREFA1, o.TAREFA2, o.TAREFA3, " +                    // 11-16
             "       o.BATERIAS, o.QT1, o.MATERIAL2, o.QT2, o.MATERIAL3, o.QT3, o.OUTROSITENS, o.QTOUTROSITENS, " + // 17-24
             "       o.TECNICO, b.SERIAL_CHAVE, " +                                                              // 25-26
-            "       CASE WHEN " + ProspeccaoService.serialNaoConfiavelSql("b.SERIAL_CHAVE") + " THEN 0 ELSE 1 END AS TEM_SERIAL " + // 27
+            "       CASE WHEN " + ProspeccaoService.serialNaoConfiavelSql("b.SERIAL_CHAVE") + " THEN 0 ELSE 1 END AS TEM_SERIAL, " + // 27
+            "       o.TOTALIQ " +                                                                               // 28 (só p/ cálculo, nunca exposto)
             "FROM dbo.[OS$] o " +
             "CROSS APPLY (SELECT " + ProspeccaoService.serialLimpoSql("o.SERIAL") + " AS SERIAL_LIMPO) a " +
             "CROSS APPLY (SELECT " + ProspeccaoService.serialChaveSql("a.SERIAL_LIMPO") + " AS SERIAL_CHAVE) b ";
@@ -136,21 +149,11 @@ public class EtiquetaService {
     /** @return null quando o código não existe (etiqueta inválida ou apagada) */
     @SuppressWarnings("unchecked")
     public EquipamentoPublicoDTO consultarPorCodigo(String codigo) {
-        if (codigo == null || !codigo.matches("[A-Za-z0-9]{6,20}")) {
-            return null;
-        }
-        List<?> ids = entityManager.createNativeQuery("SELECT OS FROM dbo.OS_ETIQUETA WHERE CODIGO = :c")
-                .setParameter("c", codigo)
-                .getResultList();
-        if (ids.isEmpty()) {
-            return null;
-        }
-        Long osEtiqueta = ((Number) ids.get(0)).longValue();
-
-        Object[] etiqueta = buscarOs(osEtiqueta);
+        Object[] etiqueta = buscarOsDaEtiqueta(codigo);
         if (etiqueta == null) {
             return null;
         }
+        Long osEtiqueta = ((Number) etiqueta[0]).longValue();
         boolean porSerial = toInt(etiqueta[27]) == 1;
 
         List<Object[]> linhas;
@@ -183,14 +186,33 @@ public class EtiquetaService {
                         : a.getOs().compareTo(b.getOs()))
                 .orElse(null);
 
+        // estado do banco de baterias do aparelho: critério da prospecção
+        // (última OS FECHADA com valor > 0; OS de garantia sem valor não conta)
+        LocalDate hoje = LocalDate.now();
+        LocalDate ultimaValida = null;
+        Long osValida = null;
+        for (Object[] r : linhas) {
+            LocalDate f = toData(r[10]);
+            if ("FECHADA".equalsIgnoreCase(texto(r[8])) && f != null && quantidade(r[28]) > 0
+                    && (ultimaValida == null || f.isAfter(ultimaValida))) {
+                ultimaValida = f;
+                osValida = ((Number) r[0]).longValue();
+            }
+        }
+
         // dados do equipamento: da OS mais recente (marca/modelo podem ter sido corrigidos depois)
         Object[] base = linhas.get(0);
         return EquipamentoPublicoDTO.builder()
                 .cliente(texto(etiqueta[2]))
+                .codcli(etiqueta[1] instanceof Number n ? n.longValue() : null)
+                .bateriaSituacao(ultimaValida == null ? null : situacaoBanco(ultimaValida, hoje))
+                .bateriaUltimaManutencao(ultimaValida == null ? null : ultimaValida.toString())
+                .bateriaMeses(ultimaValida == null ? null : (int) Period.between(ultimaValida, hoje).toTotalMonths())
+                .bateriaOs(osValida)
                 .equipamento(texto(base[3]))
                 .marca(texto(base[4]))
                 .modelo(texto(base[5]))
-                .serial(texto(etiqueta[6]))
+                .serial(serialPublico(etiqueta[6], etiqueta[26], toInt(etiqueta[27]) == 1))
                 .patrimonio(texto(base[7]))
                 .historicoPorSerial(porSerial)
                 .ultimaManutencao(ultima)
@@ -198,7 +220,100 @@ public class EtiquetaService {
                 .build();
     }
 
+    // ------------------------------------------------------------------ frota do cliente (página pública)
+
+    /**
+     * Nobreaks do cliente da etiqueta, com a situação do banco de baterias.
+     * @return null quando o código não existe
+     */
+    public FrotaClienteDTO consultarFrota(String codigo) {
+        Object[] etiqueta = buscarOsDaEtiqueta(codigo);
+        if (etiqueta == null) {
+            return null;
+        }
+        LocalDate hoje = LocalDate.now();
+        // mesma janela da prospecção: manutenção há menos de ANOS_LIMITE anos
+        LocalDate depois = hoje.minusYears(ProspeccaoService.ANOS_LIMITE);
+        // calculado em segundo plano (consulta pesada, ~13 s): ver FrotaCache
+        List<Object[]> linhas = frotaCache.doCliente(((Number) etiqueta[1]).longValue());
+
+        List<FrotaNobreakDTO> vencidos = new ArrayList<>();
+        List<FrotaNobreakDTO> atencao = new ArrayList<>();
+        List<FrotaNobreakDTO> ativos = new ArrayList<>();
+        // colunas: ver FrotaCarregador.SELECT_FROTA
+        for (Object[] r : linhas) {
+            LocalDate fech = toData(r[8]);
+            if (fech == null || !fech.isAfter(depois)) continue;
+            String situacao = situacaoBanco(fech, hoje);
+            FrotaNobreakDTO n = FrotaNobreakDTO.builder()
+                    .marca(texto(r[2]))
+                    .modelo(texto(r[3]))
+                    .serial(serialPublico(r[4], r[5], toInt(r[6]) == 1))
+                    .patrimonio(textoOuNulo(r[7]))
+                    .ultimaOs(((Number) r[1]).longValue())
+                    .ultimaManutencao(fech.toString())
+                    .meses((int) Period.between(fech, hoje).toTotalMonths())
+                    .situacao(situacao)
+                    .build();
+            switch (situacao) {
+                case "VENCIDO" -> vencidos.add(n);
+                case "ATENCAO" -> atencao.add(n);
+                default -> ativos.add(n);
+            }
+        }
+        List<FrotaNobreakDTO> todos = new ArrayList<>(linhas.size());
+        todos.addAll(vencidos);
+        todos.addAll(atencao);
+        todos.addAll(ativos);
+        return FrotaClienteDTO.builder()
+                .cliente(texto(etiqueta[2]))
+                .codcli(etiqueta[1] instanceof Number n ? n.longValue() : null)
+                .vencidos(vencidos.size())
+                .atencao(atencao.size())
+                .ativos(ativos.size())
+                .nobreaks(todos)
+                .build();
+    }
+
     // ------------------------------------------------------------------ apoio
+
+    /** ATIVO (< 18 meses), ATENCAO (18 a < 24) ou VENCIDO (>= 24) — mesmos limites da prospecção */
+    static String situacaoBanco(LocalDate ultimaManutencao, LocalDate hoje) {
+        if (!ultimaManutencao.isAfter(hoje.minusMonths(MESES_VENCIDO))) return "VENCIDO";
+        if (!ultimaManutencao.isAfter(hoje.minusMonths(MESES_ATENCAO))) return "ATENCAO";
+        return "ATIVO";
+    }
+
+    /** OS a que pertence o código da etiqueta (colunas de SELECT_OS); null se o código não existe */
+    private Object[] buscarOsDaEtiqueta(String codigo) {
+        if (codigo == null || !codigo.matches("[A-Za-z0-9]{6,20}")) {
+            return null;
+        }
+        List<?> ids = entityManager.createNativeQuery("SELECT OS FROM dbo.OS_ETIQUETA WHERE CODIGO = :c")
+                .setParameter("c", codigo)
+                .getResultList();
+        if (ids.isEmpty()) {
+            return null;
+        }
+        return buscarOs(((Number) ids.get(0)).longValue());
+    }
+
+    /**
+     * Serial para a página pública: só a parte que identifica o aparelho.
+     * Ex.: "123456789012EMAIL@EXEMPLO.COM" -> "123456789012"; sem serial confiável -> null.
+     */
+    static String serialPublico(Object serialDigitado, Object serialChave, boolean confiavel) {
+        if (!confiavel) return null;
+        String digitado = texto(serialDigitado);
+        String chave = texto(serialChave);
+        String limpo = digitado.toUpperCase(Locale.ROOT).replace(" ", "").replace("/", "").replace("-", "").replace(".", "");
+        return limpo.equals(chave) ? digitado : chave;   // sem corte: mostra como foi digitado
+    }
+
+    private static String textoOuNulo(Object o) {
+        String s = texto(o);
+        return s.isEmpty() ? null : s;
+    }
 
     @SuppressWarnings("unchecked")
     private Object[] buscarOs(Long os) {
