@@ -41,6 +41,34 @@ public class ProspeccaoService {
     EntityManager entityManager;
 
     /**
+     * Serial usado para identificar o equipamento (19/11/2026): quando o serial começa com
+     * 6 ou mais números e logo em seguida vem texto (3 ou mais letras seguidas), fica só a
+     * parte numérica do começo. Ex.: '123456789012EMAIL@EXEMPLO.COM' -> '123456789012'.
+     * Sufixos curtos de fábrica continuam: '006244B', '99195211MX', '1983700174E2', '4801011P07525'.
+     * Não corta código de barras EAN-13 ('789' + 10 números), que é código do produto e não serial.
+     *
+     * @param x expressão SQL com o serial já limpo (sem espaços, '/', '-', '.' e em maiúsculas)
+     */
+    private static String serialChaveSql(String x) {
+        String posTexto = "PATINDEX('%[^0-9]%', " + x + ")";
+        return "CASE WHEN " + x + " LIKE '[0-9][0-9][0-9][0-9][0-9][0-9]%' " +
+               "      AND SUBSTRING(" + x + ", " + posTexto + ", 3) LIKE '[A-Z][A-Z][A-Z]' " +
+               "      AND NOT (" + x + " LIKE '789%' AND " + posTexto + " = 14) " +
+               "     THEN LEFT(" + x + ", " + posTexto + " - 1) " +
+               "     ELSE " + x + " END";
+    }
+
+    /**
+     * Converte a chave gravada em PROSPECCAO_CONTATO_EQUIP para a regra atual do serial,
+     * para que contatos gravados antes da regra continuem ligados ao equipamento.
+     */
+    private static String chaveContatoSql(String col) {
+        return "CASE WHEN " + col + " LIKE 'S|%' " +
+               "     THEN 'S|' + " + serialChaveSql("SUBSTRING(" + col + ", 3, 4000)") +
+               "     ELSE " + col + " END";
+    }
+
+    /**
      * CTEs que identificam cada equipamento (CHAVE_EQUIP) e numeram suas passagens.
      * Inclui TODAS as OS de nobreak (para contagens e histórico); a validade fica em VALIDA.
      */
@@ -73,28 +101,29 @@ public class ProspeccaoService {
             "    WHERE o.EQUIPAMENTO = 'NOBREAK' " +
             "), " +
             "identificados AS ( " +
-            "    SELECT b.*, " +
+            "    SELECT b.*, s.SERIAL_CHAVE, " +
             "        ISNULL(CAST(CAST(b.POTENCIA_VA AS INT) AS VARCHAR(20)), b.MODELO_COMPACTO) AS MODELO_CHAVE, " +
             "        CASE " +
-            "            WHEN b.SERIAL_LIMPO IN ('', 'SN', 'NA', 'NT', 'X', 'XX', 'XXX') " +
-            "              OR b.SERIAL_LIMPO NOT LIKE '%[^0]%' " +
-            "              OR b.SERIAL_LIMPO LIKE '%NAO%' " +
-            "              OR b.SERIAL_LIMPO LIKE N'%NÃO%' " +
-            "              OR b.SERIAL_LIMPO LIKE '%INFO%' " +
-            "              OR b.SERIAL_LIMPO LIKE '%ILEGIVEL%' " +
-            "              OR b.SERIAL_LIMPO LIKE 'SEM%' " +
-            "              OR b.SERIAL_LIMPO LIKE '%VERIFICAR%' " +
-            "              OR b.SERIAL_LIMPO LIKE '%TROCADO%' " +
-            "              OR b.SERIAL_LIMPO LIKE '%BATERIA%' " +
-            "              OR b.SERIAL_LIMPO LIKE 'LOJA%' " +
+            "            WHEN s.SERIAL_CHAVE IN ('', 'SN', 'NA', 'NT', 'X', 'XX', 'XXX') " +
+            "              OR s.SERIAL_CHAVE NOT LIKE '%[^0]%' " +
+            "              OR s.SERIAL_CHAVE LIKE '%NAO%' " +
+            "              OR s.SERIAL_CHAVE LIKE N'%NÃO%' " +
+            "              OR s.SERIAL_CHAVE LIKE '%INFO%' " +
+            "              OR s.SERIAL_CHAVE LIKE '%ILEGIVEL%' " +
+            "              OR s.SERIAL_CHAVE LIKE 'SEM%' " +
+            "              OR s.SERIAL_CHAVE LIKE '%VERIFICAR%' " +
+            "              OR s.SERIAL_CHAVE LIKE '%TROCADO%' " +
+            "              OR s.SERIAL_CHAVE LIKE '%BATERIA%' " +
+            "              OR s.SERIAL_CHAVE LIKE 'LOJA%' " +
             "            THEN 0 ELSE 1 " +
             "        END AS TEM_SERIAL " +
             "    FROM base b " +
+            "    CROSS APPLY (SELECT " + serialChaveSql("b.SERIAL_LIMPO") + " AS SERIAL_CHAVE) s " +
             "), " +
             "chaveados AS ( " +
             "    SELECT i.*, " +
             "        CASE WHEN i.TEM_SERIAL = 1 " +
-            "             THEN 'S|' + i.SERIAL_LIMPO " +
+            "             THEN 'S|' + i.SERIAL_CHAVE " +
             "             ELSE 'M|' + CAST(i.CODCLI AS VARCHAR(20)) + '|' + i.MARCA_NORM + '|' + i.MODELO_CHAVE " +
             "        END AS CHAVE_EQUIP " +
             "    FROM identificados i " +
@@ -224,9 +253,10 @@ public class ProspeccaoService {
 
             List<Object[]> equipamentos = entityManager.createNativeQuery(
                     "SELECT x.CHAVE_EQUIP, x.RESULTADO, x.DATA_HORA, x.OPERADOR, x.DATA_RETORNO FROM ( " +
-                    "  SELECT e.CHAVE_EQUIP, e.RESULTADO, c.DATA_HORA, c.OPERADOR, c.DATA_RETORNO, " +
-                    "         ROW_NUMBER() OVER (PARTITION BY e.CHAVE_EQUIP ORDER BY c.DATA_HORA DESC, e.ID DESC) AS rn " +
+                    "  SELECT k.CHAVE_EQUIP, e.RESULTADO, c.DATA_HORA, c.OPERADOR, c.DATA_RETORNO, " +
+                    "         ROW_NUMBER() OVER (PARTITION BY k.CHAVE_EQUIP ORDER BY c.DATA_HORA DESC, e.ID DESC) AS rn " +
                     "  FROM dbo.PROSPECCAO_CONTATO_EQUIP e " +
+                    "  CROSS APPLY (SELECT " + chaveContatoSql("e.CHAVE_EQUIP") + " AS CHAVE_EQUIP) k " +
                     "  JOIN dbo.PROSPECCAO_CONTATO c ON c.ID = e.CONTATO_ID) x " +
                     "WHERE x.rn = 1").getResultList();
             for (Object[] r : equipamentos) ultimoContatoEquip.put(toStr(r[0]), r);
@@ -340,7 +370,7 @@ public class ProspeccaoService {
 
     private static final String SELECT_CONTATOS =
             "SELECT c.ID, c.CODCLI, c.DATA_HORA, c.OPERADOR, c.CANAL, c.PESSOA_CONTATADA, c.OBSERVACAO, c.DATA_RETORNO, " +
-            "       e.CHAVE_EQUIP, e.OS_REFERENCIA, e.MARCA, e.MODELO, e.SERIAL, e.RESULTADO, cli.NOMEFANTASIA " +
+            "       " + chaveContatoSql("e.CHAVE_EQUIP") + " AS CHAVE_EQUIP, e.OS_REFERENCIA, e.MARCA, e.MODELO, e.SERIAL, e.RESULTADO, cli.NOMEFANTASIA " +
             "FROM dbo.PROSPECCAO_CONTATO c " +
             "LEFT JOIN dbo.PROSPECCAO_CONTATO_EQUIP e ON e.CONTATO_ID = c.ID " +
             "LEFT JOIN dbo.[CLIENTE$] cli ON cli.CODCLI = c.CODCLI ";
