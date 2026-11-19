@@ -49,13 +49,37 @@ public class ProspeccaoService {
      *
      * @param x expressão SQL com o serial já limpo (sem espaços, '/', '-', '.' e em maiúsculas)
      */
-    private static String serialChaveSql(String x) {
+    static String serialChaveSql(String x) {
         String posTexto = "PATINDEX('%[^0-9]%', " + x + ")";
         return "CASE WHEN " + x + " LIKE '[0-9][0-9][0-9][0-9][0-9][0-9]%' " +
                "      AND SUBSTRING(" + x + ", " + posTexto + ", 3) LIKE '[A-Z][A-Z][A-Z]' " +
                "      AND NOT (" + x + " LIKE '789%' AND " + posTexto + " = 14) " +
                "     THEN LEFT(" + x + ", " + posTexto + " - 1) " +
                "     ELSE " + x + " END";
+    }
+
+    /** Serial limpo de uma OS, como expressão SQL (sem espaços, '/', '-', '.' e em maiúsculas). */
+    static String serialLimpoSql(String colunaSerial) {
+        return "UPPER(REPLACE(REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(ISNULL(" + colunaSerial + ", ''))), " +
+               "' ', ''), '/', ''), '-', ''), '.', ''))";
+    }
+
+    /**
+     * Condição SQL verdadeira quando o serial (já passado por serialChaveSql) NÃO identifica o
+     * equipamento: vazio, só zeros, genérico (SN/NA/NT/X) ou anotação (NAO, SEM..., BATERIA...).
+     */
+    static String serialNaoConfiavelSql(String x) {
+        return "(" + x + " IN ('', 'SN', 'NA', 'NT', 'X', 'XX', 'XXX') " +
+               "  OR " + x + " NOT LIKE '%[^0]%' " +
+               "  OR " + x + " LIKE '%NAO%' " +
+               "  OR " + x + " LIKE N'%NÃO%' " +
+               "  OR " + x + " LIKE '%INFO%' " +
+               "  OR " + x + " LIKE '%ILEGIVEL%' " +
+               "  OR " + x + " LIKE 'SEM%' " +
+               "  OR " + x + " LIKE '%VERIFICAR%' " +
+               "  OR " + x + " LIKE '%TROCADO%' " +
+               "  OR " + x + " LIKE '%BATERIA%' " +
+               "  OR " + x + " LIKE 'LOJA%')";
     }
 
     /**
@@ -86,8 +110,7 @@ public class ProspeccaoService {
             "            WHEN m.MODELO_COMPACTO LIKE '%VA%'  THEN n.NUM " +
             "            WHEN n.NUM IS NOT NULL              THEN CASE WHEN n.NUM < 100 THEN n.NUM * 1000 ELSE n.NUM END " +
             "        END AS POTENCIA_VA, " +
-            "        UPPER(REPLACE(REPLACE(REPLACE(REPLACE(LTRIM(RTRIM(ISNULL(o.SERIAL, ''))), " +
-            "              ' ', ''), '/', ''), '-', ''), '.', '')) AS SERIAL_LIMPO, " +
+            "        " + serialLimpoSql("o.SERIAL") + " AS SERIAL_LIMPO, " +
             "        CASE WHEN o.STATUS = 'FECHADA' " +
             "               AND o.FECHAMENTO IS NOT NULL " +
             "               AND TRY_CONVERT(DECIMAL(18,2), REPLACE(CAST(o.TOTALIQ AS VARCHAR(30)), ',', '.')) > 0 " +
@@ -103,20 +126,7 @@ public class ProspeccaoService {
             "identificados AS ( " +
             "    SELECT b.*, s.SERIAL_CHAVE, " +
             "        ISNULL(CAST(CAST(b.POTENCIA_VA AS INT) AS VARCHAR(20)), b.MODELO_COMPACTO) AS MODELO_CHAVE, " +
-            "        CASE " +
-            "            WHEN s.SERIAL_CHAVE IN ('', 'SN', 'NA', 'NT', 'X', 'XX', 'XXX') " +
-            "              OR s.SERIAL_CHAVE NOT LIKE '%[^0]%' " +
-            "              OR s.SERIAL_CHAVE LIKE '%NAO%' " +
-            "              OR s.SERIAL_CHAVE LIKE N'%NÃO%' " +
-            "              OR s.SERIAL_CHAVE LIKE '%INFO%' " +
-            "              OR s.SERIAL_CHAVE LIKE '%ILEGIVEL%' " +
-            "              OR s.SERIAL_CHAVE LIKE 'SEM%' " +
-            "              OR s.SERIAL_CHAVE LIKE '%VERIFICAR%' " +
-            "              OR s.SERIAL_CHAVE LIKE '%TROCADO%' " +
-            "              OR s.SERIAL_CHAVE LIKE '%BATERIA%' " +
-            "              OR s.SERIAL_CHAVE LIKE 'LOJA%' " +
-            "            THEN 0 ELSE 1 " +
-            "        END AS TEM_SERIAL " +
+            "        CASE WHEN " + serialNaoConfiavelSql("s.SERIAL_CHAVE") + " THEN 0 ELSE 1 END AS TEM_SERIAL " +
             "    FROM base b " +
             "    CROSS APPLY (SELECT " + serialChaveSql("b.SERIAL_LIMPO") + " AS SERIAL_CHAVE) s " +
             "), " +
