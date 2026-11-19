@@ -1,0 +1,57 @@
+/* =====================================================================================
+   PROSPECÇÃO - REGISTRO DE CONTATOS DO TELEMARKETING
+   Rodar UMA vez no banco OSCLI35 (SSMS). O script não apaga nada e pode ser
+   executado de novo com segurança: só cria o que ainda não existe.
+
+   PROSPECCAO_CONTATO        -> um registro por ligação / mensagem para o cliente
+   PROSPECCAO_CONTATO_EQUIP  -> um registro por equipamento tratado naquele contato
+
+   RESULTADO (por equipamento):
+     Em andamento: NAO_ATENDEU, PEDIU_RETORNO, INTERESSADO, ORCAMENTO_ENVIADO, COLETA_AGENDADA
+     Rejeitado   : SEM_INTERESSE, TROCOU_FORA, DESATIVADO, TELEFONE_ERRADO
+   CANAL: TELEFONE, WHATSAPP
+   ===================================================================================== */
+
+IF OBJECT_ID('dbo.PROSPECCAO_CONTATO', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PROSPECCAO_CONTATO (
+        ID                BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_PROSPECCAO_CONTATO PRIMARY KEY,
+        CODCLI            BIGINT          NOT NULL,
+        DATA_HORA         DATETIME2(0)    NOT NULL CONSTRAINT DF_PROSPECCAO_CONTATO_DATA DEFAULT (SYSDATETIME()),
+        OPERADOR          NVARCHAR(60)    NOT NULL,
+        CANAL             NVARCHAR(20)    NOT NULL,
+        PESSOA_CONTATADA  NVARCHAR(100)   NULL,
+        OBSERVACAO        NVARCHAR(1000)  NULL,
+        DATA_RETORNO      DATE            NULL,
+        CONSTRAINT CK_PROSPECCAO_CONTATO_CANAL CHECK (CANAL IN ('TELEFONE', 'WHATSAPP'))
+    );
+
+    CREATE INDEX IX_PROSPECCAO_CONTATO_CODCLI ON dbo.PROSPECCAO_CONTATO (CODCLI, DATA_HORA DESC);
+END;
+
+IF OBJECT_ID('dbo.PROSPECCAO_CONTATO_EQUIP', 'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.PROSPECCAO_CONTATO_EQUIP (
+        ID              BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_PROSPECCAO_CONTATO_EQUIP PRIMARY KEY,
+        CONTATO_ID      BIGINT          NOT NULL,
+        CHAVE_EQUIP     NVARCHAR(400)   NOT NULL,   /* 'S|<serial>' ou 'M|<codcli>|<marca>|<potencia>' (regra da prospecção) */
+        OS_REFERENCIA   BIGINT          NULL,       /* última OS do equipamento na data do contato */
+        MARCA           NVARCHAR(60)    NULL,
+        MODELO          NVARCHAR(60)    NULL,
+        SERIAL          NVARCHAR(200)   NULL,
+        RESULTADO       NVARCHAR(30)    NOT NULL,
+        CONSTRAINT FK_PROSPECCAO_CONTATO_EQUIP_CONTATO
+            FOREIGN KEY (CONTATO_ID) REFERENCES dbo.PROSPECCAO_CONTATO (ID) ON DELETE CASCADE,
+        CONSTRAINT CK_PROSPECCAO_CONTATO_EQUIP_RESULTADO CHECK (RESULTADO IN (
+            'NAO_ATENDEU', 'PEDIU_RETORNO', 'INTERESSADO', 'ORCAMENTO_ENVIADO', 'COLETA_AGENDADA',
+            'SEM_INTERESSE', 'TROCOU_FORA', 'DESATIVADO', 'TELEFONE_ERRADO'))
+    );
+
+    CREATE INDEX IX_PROSPECCAO_CONTATO_EQUIP_CHAVE   ON dbo.PROSPECCAO_CONTATO_EQUIP (CHAVE_EQUIP);
+    CREATE INDEX IX_PROSPECCAO_CONTATO_EQUIP_CONTATO ON dbo.PROSPECCAO_CONTATO_EQUIP (CONTATO_ID);
+END;
+
+/* conferência */
+SELECT name AS TABELA, create_date AS CRIADA_EM
+FROM sys.tables
+WHERE name IN ('PROSPECCAO_CONTATO', 'PROSPECCAO_CONTATO_EQUIP');

@@ -1,0 +1,9 @@
+Scripts do banco OSCLI35 (SQL Server) - rodar no SSMS.
+Usam só comentários /* */ (comentários com dois traços quebravam ao colar no SSMS).
+
+prospeccao_contatos_criar_tabelas.sql  cria as tabelas do telemarketing (PROSPECCAO_CONTATO, PROSPECCAO_CONTATO_EQUIP)
+os_etiqueta_criar_tabela.sql           cria a tabela OS_ETIQUETA (códigos do QR Code das etiquetas)
+nobreaks_bateria_vencida.sql           SÓ CONSULTA: nobreaks com banco de baterias vencido (mesma regra da tela Prospecção)
+
+Os scripts de criação podem ser rodados mais de uma vez: só criam o que ainda não existe.
+Se o banco for restaurado de um backup antigo, rode de novo os scripts de criação.
