@@ -3,7 +3,7 @@
    Banco: OSCLI35 (SQL Server). Pode rodar mais de uma vez: só cria se não existir.
 
    Cada OS que teve a etiqueta impressa ganha um CODIGO aleatório (12 letras/números).
-   O QR Code da etiqueta abre https://app.somonitores.tec.br/e/CODIGO
+   O QR Code da etiqueta abre https://status.somonitores.tec.br/e/CODIGO
    O número da OS nunca aparece no link (ninguém consegue "adivinhar" outra etiqueta).
    Para invalidar uma etiqueta: apagar a linha dela nesta tabela.
    ===================================================================================== */

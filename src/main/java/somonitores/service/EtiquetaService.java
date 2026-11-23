@@ -50,7 +50,7 @@ public class EtiquetaService {
     private static final int TAMANHO_CODIGO = 12;
     private static final SecureRandom SORTEIO = new SecureRandom();
 
-    @ConfigProperty(name = "etiqueta.url-base", defaultValue = "https://app.somonitores.tec.br/e/")
+    @ConfigProperty(name = "etiqueta.url-base", defaultValue = "https://status.somonitores.tec.br/e/")
     String urlBase;
 
     /** link do cliente (/c/CODIGO) da mensagem de WhatsApp; vazio = deriva de etiqueta.url-base */
