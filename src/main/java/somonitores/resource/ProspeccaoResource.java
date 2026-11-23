@@ -14,6 +14,7 @@ import org.eclipse.microprofile.openapi.annotations.tags.Tag;
 import somonitores.dto.ContatoProspeccaoDTO;
 import somonitores.dto.HistoricoEquipamentoDTO;
 import somonitores.dto.NobreakBateriaVencidaDTO;
+import somonitores.service.EtiquetaService;
 import somonitores.service.ProspeccaoService;
 
 import java.time.LocalDate;
@@ -24,6 +25,9 @@ public class ProspeccaoResource {
 
     @Inject
     ProspeccaoService prospeccaoService;
+
+    @Inject
+    EtiquetaService etiquetaService;
 
     /**
      * Ex.: GET /prospeccao/nobreaksBateriaVencida?meses=24&potenciaMinima=5000
@@ -57,6 +61,61 @@ public class ProspeccaoResource {
             e.printStackTrace();
             return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
                     .entity("Erro ao buscar nobreaks com bateria vencida: " + e.getMessage())
+                    .build();
+        }
+    }
+
+    /**
+     * Tela "Interação por WhatsApp": mesmos filtros de nobreaksBateriaVencida, agrupado por cliente.
+     * Ex.: GET /prospeccao/clientesBateriaVencida?meses=24&potenciaMinima=5000
+     */
+    @GET
+    @Path("/clientesBateriaVencida")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Tag(name = "Prospecção", description = "Clientes com nobreaks de banco de baterias vencido")
+    public Response buscarClientesBateriaVencida(@QueryParam("codcli") Long codcli,
+                                                 @QueryParam("meses") Integer meses,
+                                                 @QueryParam("potenciaMinima") Integer potenciaMinima,
+                                                 @QueryParam("potenciaMaxima") Integer potenciaMaxima) {
+        int mesesEfetivo = (meses == null) ? 24 : meses;
+        if (mesesEfetivo < 1 || mesesEfetivo >= ProspeccaoService.ANOS_LIMITE * 12) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("Prazo inválido: informe entre 1 e " + (ProspeccaoService.ANOS_LIMITE * 12 - 1) + " meses.")
+                    .build();
+        }
+        if (potenciaMinima != null && potenciaMaxima != null && potenciaMinima > potenciaMaxima) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("A potência mínima não pode ser maior que a potência máxima.")
+                    .build();
+        }
+        try {
+            return Response.ok(prospeccaoService.buscarClientesBateriaVencida(
+                    codcli, mesesEfetivo, potenciaMinima, potenciaMaxima)).build();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("Erro ao buscar clientes com bateria vencida: " + e.getMessage())
+                    .build();
+        }
+    }
+
+    /**
+     * Link público fixo do cliente (status das baterias de todos os nobreaks), criado na primeira vez.
+     * POST /prospeccao/linkCliente/219  ->  { codcli, codigo, url }
+     */
+    @POST
+    @Path("/linkCliente/{codcli}")
+    @Produces(MediaType.APPLICATION_JSON)
+    @Tag(name = "Prospecção", description = "Link público do cliente para a mensagem de WhatsApp")
+    public Response gerarLinkCliente(@PathParam("codcli") Long codcli) {
+        try {
+            return Response.ok(etiquetaService.gerarLinkCliente(codcli)).build();
+        } catch (IllegalArgumentException e) {
+            return Response.status(Response.Status.NOT_FOUND).entity(e.getMessage()).build();
+        } catch (Exception e) {
+            e.printStackTrace();
+            return Response.status(Response.Status.INTERNAL_SERVER_ERROR)
+                    .entity("Erro ao gerar o link do cliente: " + e.getMessage())
                     .build();
         }
     }

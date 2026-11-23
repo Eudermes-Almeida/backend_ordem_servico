@@ -3,6 +3,7 @@ Usam só comentários /* */ (comentários com dois traços quebravam ao colar no
 
 prospeccao_contatos_criar_tabelas.sql  cria as tabelas do telemarketing (PROSPECCAO_CONTATO, PROSPECCAO_CONTATO_EQUIP)
 os_etiqueta_criar_tabela.sql           cria a tabela OS_ETIQUETA (códigos do QR Code das etiquetas)
+cliente_link_criar_tabela.sql          cria a tabela CLIENTE_LINK (link fixo /c/CODIGO por cliente, usado na Interação por WhatsApp)
 nobreaks_bateria_vencida.sql           SÓ CONSULTA: nobreaks com banco de baterias vencido (mesma regra da tela Prospecção)
 
 Os scripts de criação podem ser rodados mais de uma vez: só criam o que ainda não existe.

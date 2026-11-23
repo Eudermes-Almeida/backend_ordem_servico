@@ -5,6 +5,7 @@ import jakarta.inject.Inject;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.Query;
 import jakarta.transaction.Transactional;
+import somonitores.dto.ClienteBateriaVencidaDTO;
 import somonitores.dto.ContatoEquipDTO;
 import somonitores.dto.ContatoProspeccaoDTO;
 import somonitores.dto.HistoricoEquipamentoDTO;
@@ -230,6 +231,70 @@ public class ProspeccaoService {
         }
         enriquecerComContatos(resultado);
         return resultado;
+    }
+
+    /**
+     * Tela "Interação por WhatsApp": os mesmos nobreaks de buscarNobreaksBateriaVencida,
+     * agrupados por cliente (o cliente aparece uma vez), com contato e WhatsApp do cadastro
+     * e o último WhatsApp já registrado na prospecção.
+     */
+    @SuppressWarnings("unchecked")
+    public List<ClienteBateriaVencidaDTO> buscarClientesBateriaVencida(Long codcli, int meses,
+                                                                       Integer potenciaMinimaVa,
+                                                                       Integer potenciaMaximaVa) {
+        Map<Long, ClienteBateriaVencidaDTO> porCliente = new LinkedHashMap<>();
+        for (NobreakBateriaVencidaDTO n : buscarNobreaksBateriaVencida(codcli, meses, potenciaMinimaVa, potenciaMaximaVa)) {
+            if (n.getCodcli() == null) continue;
+            ClienteBateriaVencidaDTO c = porCliente.computeIfAbsent(n.getCodcli(), k -> ClienteBateriaVencidaDTO.builder()
+                    .codcli(k)
+                    .fantasia(n.getFantasia())
+                    .rzsocial(n.getRzsocial())
+                    .qtNobreaks(0)
+                    .mesesMaisAntigo(0)
+                    .build());
+            c.setQtNobreaks(c.getQtNobreaks() + 1);
+            if (n.getMesesDesdeManutencao() != null && n.getMesesDesdeManutencao() > c.getMesesMaisAntigo()) {
+                c.setMesesMaisAntigo(n.getMesesDesdeManutencao());
+            }
+        }
+        if (porCliente.isEmpty()) return new ArrayList<>();
+
+        // contato e WhatsApp (coluna FONE) do cadastro, em blocos para não estourar o IN
+        List<Long> codigos = new ArrayList<>(porCliente.keySet());
+        for (int i = 0; i < codigos.size(); i += 1000) {
+            List<Long> bloco = codigos.subList(i, Math.min(i + 1000, codigos.size()));
+            List<Object[]> cadastro = entityManager.createNativeQuery(
+                            "SELECT CODCLI, CONTATO, FONE, NOMEFANTASIA FROM dbo.[CLIENTE$] WHERE CODCLI IN (:codigos)")
+                    .setParameter("codigos", bloco)
+                    .getResultList();
+            for (Object[] r : cadastro) {
+                ClienteBateriaVencidaDTO c = porCliente.get(toLong(r[0]));
+                if (c == null) continue;
+                c.setContato(toStr(r[1]));
+                c.setWhatsapp(toStr(r[2]));
+                String fantasia = toStr(r[3]);
+                if (fantasia != null && !fantasia.isEmpty()) c.setFantasia(fantasia);
+            }
+        }
+
+        // último WhatsApp registrado para cada cliente (se a tabela de contatos existir)
+        try {
+            List<Object[]> envios = entityManager.createNativeQuery(
+                    "SELECT x.CODCLI, x.DATA_HORA, x.OPERADOR FROM ( " +
+                    "  SELECT c.CODCLI, c.DATA_HORA, c.OPERADOR, " +
+                    "         ROW_NUMBER() OVER (PARTITION BY c.CODCLI ORDER BY c.DATA_HORA DESC, c.ID DESC) AS rn " +
+                    "  FROM dbo.PROSPECCAO_CONTATO c WHERE c.CANAL = 'WHATSAPP') x " +
+                    "WHERE x.rn = 1").getResultList();
+            for (Object[] r : envios) {
+                ClienteBateriaVencidaDTO c = porCliente.get(toLong(r[0]));
+                if (c == null) continue;
+                c.setUltimoWhatsapp(toDataHoraIso(r[1]));
+                c.setUltimoWhatsappOperador(toStr(r[2]));
+            }
+        } catch (Exception e) {
+            System.out.println("Prospecção: tabelas de contato indisponíveis (" + e.getMessage() + ")");
+        }
+        return new ArrayList<>(porCliente.values());
     }
 
     // ------------------------------------------------------------------ contatos (telemarketing)

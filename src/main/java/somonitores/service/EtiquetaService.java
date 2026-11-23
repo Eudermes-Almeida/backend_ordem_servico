@@ -9,6 +9,7 @@ import somonitores.dto.EquipamentoPublicoDTO;
 import somonitores.dto.EtiquetaOsDTO;
 import somonitores.dto.FrotaClienteDTO;
 import somonitores.dto.FrotaNobreakDTO;
+import somonitores.dto.LinkClienteDTO;
 import somonitores.dto.PassagemPublicaDTO;
 
 import java.security.SecureRandom;
@@ -51,6 +52,10 @@ public class EtiquetaService {
 
     @ConfigProperty(name = "etiqueta.url-base", defaultValue = "https://app.somonitores.tec.br/e/")
     String urlBase;
+
+    /** link do cliente (/c/CODIGO) da mensagem de WhatsApp; vazio = deriva de etiqueta.url-base */
+    @ConfigProperty(name = "cliente.url-base")
+    java.util.Optional<String> urlBaseCliente;
 
     @Inject
     EntityManager entityManager;
@@ -231,11 +236,118 @@ public class EtiquetaService {
         if (etiqueta == null) {
             return null;
         }
+        return montarFrota(((Number) etiqueta[1]).longValue(), texto(etiqueta[2]));
+    }
+
+    /**
+     * Frota do cliente para a lista do LOGIN EXTERNO: só devolve se o CPF/CNPJ informado
+     * (o mesmo digitado no login) for o do cadastro do cliente. Sem essa conferência, bastaria
+     * trocar o código para ver os equipamentos de qualquer cliente.
+     * @return null quando o cliente não existe ou o documento não confere
+     */
+    @SuppressWarnings("unchecked")
+    public FrotaClienteDTO consultarFrotaCliente(Long codcli, String documento) {
+        String doc = somenteDigitos(documento);
+        if (codcli == null || doc.length() < 11) {
+            return null;
+        }
+        List<Object[]> l = entityManager.createNativeQuery(
+                        "SELECT NOMEFANTASIA, CPFCNPJ FROM dbo.[CLIENTE$] WHERE CODCLI = :c")
+                .setParameter("c", codcli)
+                .getResultList();
+        if (l.isEmpty() || !doc.equals(somenteDigitos(texto(l.get(0)[1])))) {
+            return null;
+        }
+        return montarFrota(codcli, texto(l.get(0)[0]));
+    }
+
+    // ------------------------------------------------------------------ link do cliente (/c/CODIGO)
+
+    /**
+     * Link público fixo do cliente (campanha "Interação por WhatsApp"), criado na primeira vez.
+     * Usa o mesmo site da etiqueta: ".../e/" vira ".../c/".
+     *
+     * @throws IllegalArgumentException cliente inexistente
+     */
+    @Transactional
+    public LinkClienteDTO gerarLinkCliente(Long codcli) {
+        if (codcli == null || entityManager.createNativeQuery("SELECT 1 FROM dbo.[CLIENTE$] WHERE CODCLI = :c")
+                .setParameter("c", codcli).getResultList().isEmpty()) {
+            throw new IllegalArgumentException("Cliente " + codcli + " não encontrado.");
+        }
+        List<?> l = entityManager.createNativeQuery("SELECT CODIGO FROM dbo.CLIENTE_LINK WHERE CODCLI = :c")
+                .setParameter("c", codcli)
+                .getResultList();
+        String codigo = l.isEmpty() ? criarCodigoCliente(codcli) : l.get(0).toString();
+        return LinkClienteDTO.builder()
+                .codcli(codcli)
+                .codigo(codigo)
+                .url(urlBaseCliente() + codigo)
+                .build();
+    }
+
+    /**
+     * Base do link do cliente: CLIENTE_URL_BASE (.env) quando informado; senão a da etiqueta
+     * com "/e/" trocado por "/c/". O WhatsApp só deixa clicável link com nome de domínio
+     * (IP puro fica texto), por isso pode precisar de um endereço diferente do QR.
+     */
+    private String urlBaseCliente() {
+        if (urlBaseCliente.isPresent() && !urlBaseCliente.get().isBlank()) {
+            String b = urlBaseCliente.get().trim();
+            return b.endsWith("/") ? b : b + "/";
+        }
+        String base = urlBase.endsWith("/") ? urlBase : urlBase + "/";
+        return base.endsWith("/e/") ? base.substring(0, base.length() - 3) + "/c/" : base + "c/";
+    }
+
+    private String criarCodigoCliente(Long codcli) {
+        for (int tentativa = 0; tentativa < 5; tentativa++) {
+            String codigo = sortearCodigo();
+            int existe = entityManager.createNativeQuery("SELECT 1 FROM dbo.CLIENTE_LINK WHERE CODIGO = :c")
+                    .setParameter("c", codigo)
+                    .getResultList().size();
+            if (existe == 0) {
+                entityManager.createNativeQuery("INSERT INTO dbo.CLIENTE_LINK (CODCLI, CODIGO) VALUES (:codcli, :c)")
+                        .setParameter("codcli", codcli)
+                        .setParameter("c", codigo)
+                        .executeUpdate();
+                return codigo;
+            }
+        }
+        throw new IllegalStateException("Não foi possível gerar o link do cliente. Tente novamente.");
+    }
+
+    /**
+     * Frota do cliente pelo link público /c/CODIGO.
+     * @return null quando o código não existe
+     */
+    @SuppressWarnings("unchecked")
+    public FrotaClienteDTO consultarFrotaPorLinkCliente(String codigo) {
+        if (codigo == null || !codigo.matches("[A-Za-z0-9]{6,20}")) {
+            return null;
+        }
+        List<Object[]> l = entityManager.createNativeQuery(
+                        "SELECT k.CODCLI, c.NOMEFANTASIA FROM dbo.CLIENTE_LINK k " +
+                        "LEFT JOIN dbo.[CLIENTE$] c ON c.CODCLI = k.CODCLI WHERE k.CODIGO = :c")
+                .setParameter("c", codigo)
+                .getResultList();
+        if (l.isEmpty()) {
+            return null;
+        }
+        return montarFrota(((Number) l.get(0)[0]).longValue(), texto(l.get(0)[1]));
+    }
+
+    private static String somenteDigitos(String s) {
+        return s == null ? "" : s.replaceAll("\\D", "");
+    }
+
+    /** lista da frota do cliente (vencidos, atenção, ativos), a partir do FrotaCache */
+    private FrotaClienteDTO montarFrota(Long codcli, String nomeCliente) {
         LocalDate hoje = LocalDate.now();
         // mesma janela da prospecção: manutenção há menos de ANOS_LIMITE anos
         LocalDate depois = hoje.minusYears(ProspeccaoService.ANOS_LIMITE);
         // calculado em segundo plano (consulta pesada, ~13 s): ver FrotaCache
-        List<Object[]> linhas = frotaCache.doCliente(((Number) etiqueta[1]).longValue());
+        List<Object[]> linhas = frotaCache.doCliente(codcli);
 
         List<FrotaNobreakDTO> vencidos = new ArrayList<>();
         List<FrotaNobreakDTO> atencao = new ArrayList<>();
@@ -266,8 +378,8 @@ public class EtiquetaService {
         todos.addAll(atencao);
         todos.addAll(ativos);
         return FrotaClienteDTO.builder()
-                .cliente(texto(etiqueta[2]))
-                .codcli(etiqueta[1] instanceof Number n ? n.longValue() : null)
+                .cliente(nomeCliente)
+                .codcli(codcli)
                 .vencidos(vencidos.size())
                 .atencao(atencao.size())
                 .ativos(ativos.size())
