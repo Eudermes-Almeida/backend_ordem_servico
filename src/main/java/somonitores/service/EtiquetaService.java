@@ -24,7 +24,7 @@ import java.util.Locale;
 
 /**
  * ETIQUETA DO EQUIPAMENTO (QR Code) - regras decididas com o usuário em 19/11/2026:
- *  - Etiqueta só para OS FECHADA (é colada no equipamento na entrega).
+ *  - Etiqueta para OS em qualquer situação (24/11/2026; antes era só FECHADA).
  *  - O QR leva a um link com código aleatório (tabela OS_ETIQUETA), nunca o número da OS.
  *  - A página pública abre direto (sem login) e NUNCA mostra valores.
  *  - Histórico: OS do MESMO cliente com o mesmo serial (regra de serial da prospecção),
@@ -83,7 +83,6 @@ public class EtiquetaService {
      * (reimpressões usam o mesmo código).
      *
      * @throws IllegalArgumentException OS inexistente
-     * @throws IllegalStateException    OS não está fechada
      */
     @Transactional
     public EtiquetaOsDTO gerarEtiqueta(Long os) {
@@ -91,10 +90,8 @@ public class EtiquetaService {
         if (r == null) {
             throw new IllegalArgumentException("Ordem de serviço " + os + " não encontrada.");
         }
-        if (!"FECHADA".equalsIgnoreCase(texto(r[8])) || r[10] == null) {
-            throw new IllegalStateException("A etiqueta só pode ser impressa com a ordem de serviço FECHADA "
-                    + "(situação atual: " + texto(r[8]) + ").");
-        }
+        // 24/11/2026: etiqueta liberada para OS em QUALQUER situação (antes só FECHADA).
+        // Garantias continuam só aparecendo depois do fechamento (montarPassagem).
 
         String codigo = buscarCodigo(os);
         if (codigo == null) {
